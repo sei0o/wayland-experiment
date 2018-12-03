@@ -4,6 +4,7 @@
 #include <wayland-client.h>
 #include <wayland-client-protocol.h>
 #include <wayland-egl.h>
+#include <wayland-cursor.h>
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <errno.h>
@@ -24,6 +25,9 @@ struct wl_callback *frame_callback;
 struct wl_seat *seat;
 struct wl_pointer *pointer;
 struct wl_keyboard *keyboard;
+struct wl_cursor_theme *cursor_theme;
+struct wl_cursor *cursor;
+struct wl_surface *cursor_sfc;
 
 void *shm_data;
 
@@ -114,7 +118,7 @@ void paint_pixels() {
   uint32_t *pixel = shm_data;
 
   for (n = 0; n < WIDTH * HEIGHT; n++) {
-    pixel[n] = 0x0;
+    pixel[n] = 0xff000000;
   }
 }
 
@@ -196,7 +200,10 @@ void key(void *data, struct wl_keyboard *kbd, uint32_t serial, uint32_t time, ui
 }
 
 void modifiers(void *data, struct wl_keyboard *kbd, uint32_t serial, uint32_t mods_depressed, uint32_t mods_latched, uint32_t mods_locked, uint32_t group) {
-
+  printf(
+    "Mods Depressed: %d\n"
+    "Mods Latched: %d\n"
+    "Mods Locked: %d\n", mods_depressed, mods_latched, mods_locked);
 }
 
 void repeat_info(void *data, struct wl_keyboard *kbd, int32_t rate, int32_t delay) {
@@ -213,7 +220,13 @@ struct wl_keyboard_listener keyboard_listener = {
 };
 
 void pointer_enter(void *data, struct wl_pointer *ptr, uint32_t serial, struct wl_surface *sfc, wl_fixed_t sfc_x, wl_fixed_t sfc_y) {
-
+  struct wl_cursor_image *cursor_image = cursor->images[0];
+  struct wl_buffer *cursor_buf = wl_cursor_image_get_buffer(cursor_image);
+  cursor_sfc = wl_compositor_create_surface(compositor);
+  wl_surface_attach(cursor_sfc, cursor_buf, 0, 0);
+  wl_surface_damage(cursor_sfc, 0, 0, cursor_image->width, cursor_image->height);
+  wl_surface_commit(cursor_sfc);
+  wl_pointer_set_cursor(pointer, 0, cursor_sfc, cursor_image->hotspot_x, cursor_image->hotspot_y); // serial?
 }
 
 void pointer_leave(void *data, struct wl_pointer *ptr, uint32_t serial, struct wl_surface *sfc) {
@@ -370,6 +383,15 @@ int main(int argc, char **argv) {
     printf("Created a surface\n");
   }
 
+  cursor_theme = wl_cursor_theme_load(NULL, 32, shm);
+  cursor = wl_cursor_theme_get_cursor(cursor_theme, "text");
+  if (cursor == NULL) {
+    perror("Could not get a cursor\n");
+    exit(1);
+  } else {
+    printf("Got a cursor\n");
+  }
+
   shell_surface = wl_shell_get_shell_surface(shell, surface);
   if (shell_surface == NULL) {
     perror("Could not create a shell surface\n");
@@ -391,6 +413,8 @@ int main(int argc, char **argv) {
   }
 
   wl_seat_release(seat);
+  wl_cursor_theme_destroy(cursor_theme);
+  wl_surface_destroy(cursor_sfc);
 
   wl_display_disconnect(display);
   printf("disconnected from the display\n");
