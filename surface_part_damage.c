@@ -115,8 +115,8 @@ void paint_pixels() {
     pixel[n] = pixel_value; // black
   }
 
-  pixel_value += 0x010101;
-  if (pixel_value > 0xffffff) {
+  pixel_value += 0x01010101;
+  if (pixel_value > 0xffffffff) {
     pixel_value = 0x0;
   }
 }
@@ -166,7 +166,7 @@ struct wl_buffer *create_buffer() {
   }
 
   pool = wl_shm_create_pool(shm, fd, size);
-  buf = wl_shm_pool_create_buffer(pool, 0, WIDTH, HEIGHT, line, WL_SHM_FORMAT_XRGB8888);
+  buf = wl_shm_pool_create_buffer(pool, 0, WIDTH, HEIGHT, line, WL_SHM_FORMAT_ARGB8888);
 
   wl_shm_pool_destroy(pool);
   return buf;
