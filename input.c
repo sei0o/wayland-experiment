@@ -158,12 +158,6 @@ void create_window() {
   wl_surface_commit(surface);
 }
 
-void create_window_in(wl_buffer *buf) {
-  buf = create_buffer();
-  wl_surface_attach(surface, buf, 0, 0);
-  wl_surface_commit(surface);
-}
-
 void shm_format(void *data, struct wl_shm *wl_shm, uint32_t format) {
   printf("Format %d\n", format);
 }
@@ -377,7 +371,7 @@ void handle_configure(void *data, struct wl_shell_surface *shell_surface, uint32
 
   win_width = w;
   win_height = h;
-  create_window();
+  buffer = create_buffer();
 }
 
 void handle_popup_done(void *data, struct wl_shell_surface *shell_surface) {
