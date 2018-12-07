@@ -11,8 +11,11 @@
 #include <unistd.h>
 #include <linux/input.h>
 
-#define WIDTH 500
-#define HEIGHT 400
+#define MIN_WIN_WIDTH 30
+#define MIN_WIN_HEIGHT 60
+
+unsigned win_width = 500;
+unsigned win_height = 400;
 
 struct wl_display *display;
 struct wl_compositor *compositor;
@@ -30,26 +33,6 @@ struct wl_cursor *cursor;
 struct wl_surface *cursor_sfc;
 
 void *shm_data;
-
-// Shell surface listeners
-void handle_ping(void *data, struct wl_shell_surface *shell_surface, uint32_t serial) {
-  wl_shell_surface_pong(shell_surface, serial);
-  printf("Pong\n");
-}
-
-void handle_configure(void *data, struct wl_shell_surface *shell_surface, uint32_t edges, int32_t width, int32_t height) {
-
-}
-
-void handle_popup_done(void *data, struct wl_shell_surface *shell_surface) {
-
-}
-
-struct wl_shell_surface_listener shell_surface_listener = {
-  handle_ping,
-  handle_configure,
-  handle_popup_done
-};
 
 // Dealing with tmpfiles
 int set_cloexec_or_close(int fd) {
@@ -117,7 +100,7 @@ void paint_pixels() {
   int n;
   uint32_t *pixel = shm_data;
 
-  for (n = 0; n < WIDTH * HEIGHT; n++) {
+  for (n = 0; n < win_width * win_height; n++) {
     pixel[n] = 0xff000000;
   }
 }
@@ -128,7 +111,7 @@ uint32_t ht;
 
 void redraw(void *data, struct wl_callback *callback, uint32_t time) {
   wl_callback_destroy(frame_callback);
-  wl_surface_damage(surface, 0, 0, WIDTH, HEIGHT);
+  wl_surface_damage(surface, 0, 0, win_width, win_height);
   paint_pixels();
   frame_callback = wl_surface_frame(surface);
   wl_surface_attach(surface, buffer, 0, 0);
@@ -142,12 +125,12 @@ static const struct wl_callback_listener frame_listener = {
 
 struct wl_buffer *create_buffer() {
   struct wl_shm_pool *pool;
-  int line = WIDTH * 4; // 4 bytes/px
-  int size = line * HEIGHT;
+  int line = win_width * 4; // 4 bytes/px
+  int size = line * win_height;
   int fd;
   struct wl_buffer *buf;
 
-  ht = HEIGHT;
+  ht = win_height;
 
   fd = os_create_anonymous_file(size);
   if (fd < 0) {
@@ -163,8 +146,8 @@ struct wl_buffer *create_buffer() {
   }
 
   pool = wl_shm_create_pool(shm, fd, size);
-  buf = wl_shm_pool_create_buffer(pool, 0, WIDTH, HEIGHT, line, WL_SHM_FORMAT_ARGB8888);
-
+  buf = wl_shm_pool_create_buffer(pool, 0, win_width, win_height, line, WL_SHM_FORMAT_ARGB8888);
+  
   wl_shm_pool_destroy(pool);
   return buf;
 }
@@ -172,6 +155,12 @@ struct wl_buffer *create_buffer() {
 void create_window() {
   buffer = create_buffer();
   wl_surface_attach(surface, buffer, 0, 0);
+  wl_surface_commit(surface);
+}
+
+void create_window_in(wl_buffer *buf) {
+  buf = create_buffer();
+  wl_surface_attach(surface, buf, 0, 0);
   wl_surface_commit(surface);
 }
 
@@ -219,7 +208,7 @@ struct wl_keyboard_listener keyboard_listener = {
   repeat_info
 };
 
-void pointer_enter(void *data, struct wl_pointer *ptr, uint32_t serial, struct wl_surface *sfc, wl_fixed_t sfc_x, wl_fixed_t sfc_y) {
+void refresh_cursor() {
   struct wl_cursor_image *cursor_image = cursor->images[0];
   struct wl_buffer *cursor_buf = wl_cursor_image_get_buffer(cursor_image);
   cursor_sfc = wl_compositor_create_surface(compositor);
@@ -229,14 +218,37 @@ void pointer_enter(void *data, struct wl_pointer *ptr, uint32_t serial, struct w
   wl_pointer_set_cursor(pointer, 0, cursor_sfc, cursor_image->hotspot_x, cursor_image->hotspot_y); // serial?
 }
 
+void pointer_enter(void *data, struct wl_pointer *ptr, uint32_t serial, struct wl_surface *sfc, wl_fixed_t sfc_x, wl_fixed_t sfc_y) {
+  refresh_cursor();
+}
+
 void pointer_leave(void *data, struct wl_pointer *ptr, uint32_t serial, struct wl_surface *sfc) {
 
 }
 
+// These names are correspoinding to enum wl_shell_surface_resize (wayland-client-protocol.h)
+// (but NONE corresponds to "move")
+const char *cur_name[] = {
+  "move", "top_side", "bottom_side", NULL, "left_side", "top_left_corner", "bottom_left_corner", NULL, "right_side", "top_right_corner", "bottom_right_corner"
+};
+
+#define FRAME_WIDTH 15
+
+enum wl_shell_surface_resize area;
 wl_fixed_t sx, sy;
+
 void motion(void *data, struct wl_pointer *ptr, uint32_t time, wl_fixed_t sfc_x, wl_fixed_t sfc_y) {
-  sx = sfc_x;
-  sy = sfc_y;
+  sx = sfc_x >> 8;
+  sy = sfc_y >> 8;
+
+  area = WL_SHELL_SURFACE_RESIZE_NONE;
+  if (sx < FRAME_WIDTH) area |= WL_SHELL_SURFACE_RESIZE_LEFT;
+  if (sx > win_width - FRAME_WIDTH) area |= WL_SHELL_SURFACE_RESIZE_RIGHT;
+  if (sy < FRAME_WIDTH) area |= WL_SHELL_SURFACE_RESIZE_TOP;
+  if (sy > win_height - FRAME_WIDTH) area |= WL_SHELL_SURFACE_RESIZE_BOTTOM;
+
+  cursor = wl_cursor_theme_get_cursor(cursor_theme, cur_name[area]);
+  refresh_cursor();
 }
 
 void button(void *data, struct wl_pointer *ptr, uint32_t serial, uint32_t time, uint32_t button, uint32_t state) {
@@ -244,6 +256,14 @@ void button(void *data, struct wl_pointer *ptr, uint32_t serial, uint32_t time, 
 
   if (button == BTN_RIGHT) {
     exit(0);
+  }
+
+  if (button == BTN_LEFT) {
+    if (area == WL_SHELL_SURFACE_RESIZE_NONE) {
+      wl_shell_surface_move(shell_surface, seat, serial);
+    } else {
+      wl_shell_surface_resize(shell_surface, seat, serial, area);
+    }
   }
 }
 
@@ -338,6 +358,36 @@ void global_remove(void *data, struct wl_registry *registry, uint32_t id) {
 struct wl_registry_listener registry_listener = {
   .global = global_add,
   .global_remove = global_remove
+};
+
+// Shell surface listeners
+void handle_ping(void *data, struct wl_shell_surface *shell_surface, uint32_t serial) {
+  wl_shell_surface_pong(shell_surface, serial);
+  printf("Pong\n");
+}
+
+void handle_configure(void *data, struct wl_shell_surface *shell_surface, uint32_t edges, int32_t width, int32_t height) {
+  // resize
+  int32_t w = width, h = height;
+  if (w < MIN_WIN_WIDTH) w = MIN_WIN_WIDTH;
+  if (h < MIN_WIN_HEIGHT) h = MIN_WIN_HEIGHT;
+  fprintf(stderr, "hoge, w: %d, h: %d\n", w, h);
+
+  wl_buffer_destroy(buffer);
+
+  win_width = w;
+  win_height = h;
+  create_window();
+}
+
+void handle_popup_done(void *data, struct wl_shell_surface *shell_surface) {
+
+}
+
+struct wl_shell_surface_listener shell_surface_listener = {
+  handle_ping,
+  handle_configure,
+  handle_popup_done
 };
 
 int main(int argc, char **argv) {
