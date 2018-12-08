@@ -204,22 +204,23 @@ void copy(const char *text, uint32_t serial) {
 void paste() {
   int fd[2], nfd;
   struct epoll_event ev;
-
-  // see: https://eklitzke.org/blocking-io-nonblocking-io-and-epoll
-  ev.events = EPOLLIN;
-  ev.data.fd = fd[0];
-  if (epoll_ctl(epfd, EPOLL_CTL_ADD, fd[0], &ev) == -1) {
-    perror("Could not add fd[0]\n");
-    exit(1);
-  }
-
+  
   if (!data_offer) return;
 
   if (pipe2(fd, __O_CLOEXEC) == -1) return;
+
+  // see: https://eklitzke.org/blocking-io-nonblocking-io-and-epoll
+  ev.events = EPOLLIN;
+  ev.data.fd = clipboard_fd = fd[0];
+  if (epoll_ctl(epfd, EPOLL_CTL_ADD, fd[0], &ev) == -1) {
+    perror("Could not add fd[0]");
+    exit(1);
+  }
+
   wl_data_offer_receive(data_offer, "text/plain;charset=utf-8", fd[1]);
   close(fd[1]); // the source client closes fd[1], doesn't it?
 
-  fprintf(stderr, "wait for the source client / the clipboard manager to send the data...");
+  fprintf(stderr, "wait for the source client / the clipboard manager to send the data...\n");
 }
 
 void key(void *data, struct wl_keyboard *kbd, uint32_t serial, uint32_t time, uint32_t key, uint32_t state) {
@@ -605,6 +606,10 @@ int main(int argc, char **argv) {
 
           clipboard_fd = -1;
           clipboard[strlen(clipboard)] = '\0'; // append '\0'
+          fprintf(stderr, "clipboard: %s\n", clipboard);
+
+          // reset clipboard
+          strcpy(clipboard, "");
           break;
         }
 
