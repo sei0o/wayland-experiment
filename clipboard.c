@@ -12,11 +12,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 
-
-#define MIN_WIN_WIDTH 30
-#define MIN_WIN_HEIGHT 60
-
-unsigned win_width = 500;
+unsigned win_width = 400;
 unsigned win_height = 400;
 
 struct wl_display *display;
@@ -34,13 +30,17 @@ struct wl_data_device_manager *data_device_man;
 struct wl_data_device *data_device;
 struct wl_data_offer *data_offer;
 struct wl_data_source *data_source;
+struct wl_data_offer *drag_offer;
+struct wl_data_source *drag_source;
 
 void *shm_data;
-char *clipboard;
-size_t clipboard_size;
-int clipboard_fd;
+char *clipboard, *drag_content;
+size_t clipboard_size, drag_content_size;
+int clipboard_fd, drag_fd;
 char *copy_text;
 int epfd;
+uint32_t drag_enter_serial;
+uint32_t drag_action;
 
 // Dealing with tmpfiles
 int set_cloexec_or_close(int fd) {
@@ -188,6 +188,22 @@ void keyboard_leave(void *data, struct wl_keyboard *kbd, uint32_t serial, struct
 
 struct wl_data_source_listener data_source_listener;
 
+void drag(uint32_t serial) {
+  char text[] = "way way wayland";
+  if (copy_text) free(copy_text);
+  copy_text = (char *)malloc(strlen(text));
+  memcpy(copy_text, text, strlen(text)); // ignore tailing '\0'
+
+  drag_source = wl_data_device_manager_create_data_source(data_device_man);
+  wl_data_source_offer(drag_source, "text/plain;charset=utf-8");
+  wl_data_source_offer(drag_source, "UTF8_STRING");
+  wl_data_source_add_listener(drag_source, &data_source_listener, NULL);
+
+  wl_data_source_set_actions(drag_source, WL_DATA_DEVICE_MANAGER_DND_ACTION_MOVE | WL_DATA_DEVICE_MANAGER_DND_ACTION_COPY | WL_DATA_DEVICE_MANAGER_DND_ACTION_ASK);
+
+  wl_data_device_start_drag(data_device, drag_source, surface, NULL, serial);
+}
+
 void copy(const char *text, uint32_t serial) {
   if (copy_text) free(copy_text);
   copy_text = (char *)malloc(strlen(text));
@@ -239,10 +255,10 @@ void key(void *data, struct wl_keyboard *kbd, uint32_t serial, uint32_t time, ui
 }
 
 void modifiers(void *data, struct wl_keyboard *kbd, uint32_t serial, uint32_t mods_depressed, uint32_t mods_latched, uint32_t mods_locked, uint32_t group) {
-  printf(
-    "Mods Depressed: %d\n"
-    "Mods Latched: %d\n"
-    "Mods Locked: %d\n", mods_depressed, mods_latched, mods_locked);
+  // printf(
+  //   "Mods Depressed: %d\n"
+  //   "Mods Latched: %d\n"
+  //   "Mods Locked: %d\n", mods_depressed, mods_latched, mods_locked);
 }
 
 void repeat_info(void *data, struct wl_keyboard *kbd, int32_t rate, int32_t delay) {
@@ -268,6 +284,10 @@ void motion(void *data, struct wl_pointer *ptr, uint32_t time, wl_fixed_t sfc_x,
 }
 
 void button(void *data, struct wl_pointer *ptr, uint32_t serial, uint32_t time, uint32_t button, uint32_t state) {
+  if (button == BTN_LEFT && state == WL_POINTER_BUTTON_STATE_PRESSED) {
+    drag(serial);
+  }
+
   if (button == BTN_RIGHT) {
     exit(0);
   }
@@ -278,7 +298,7 @@ void axis(void *data, struct wl_pointer *ptr, uint32_t time, uint32_t axis, wl_f
 }
 
 void frame(void *data, struct wl_pointer *ptr) {
-  printf("-- Frame Ended --\n");
+  // printf("-- Frame Ended --\n");
 }
 
 void axis_source(void *data, struct wl_pointer *ptr, uint32_t axis_source) {
@@ -340,12 +360,28 @@ void data_offer_offer(void *data, struct wl_data_offer *offer, const char *mime_
   fprintf(stderr, "[data_offer(%p).offer] MIME type: %s\n", offer, mime_type);
 }
 
-void data_offer_source_actions() {
-
+void data_offer_source_actions(void *data, struct wl_data_offer *offer, uint32_t source_actions) {
+  fprintf(stderr, "[data_offer(%p).source_actions] %u\n", offer, source_actions);
 }
 
-void data_offer_action() {
-
+void data_offer_action(void *data, struct wl_data_offer *offer, uint32_t action) {
+  drag_action = action;
+  switch (action) {
+    case WL_DATA_DEVICE_MANAGER_DND_ACTION_NONE:
+      fprintf(stderr, "[data_offer.action] none\n");
+      break;
+    case WL_DATA_DEVICE_MANAGER_DND_ACTION_COPY:
+      fprintf(stderr, "[data_offer.action] copy\n");
+      break;
+    case WL_DATA_DEVICE_MANAGER_DND_ACTION_MOVE:
+      fprintf(stderr, "[data_offer.action] move\n");
+      break;
+    case WL_DATA_DEVICE_MANAGER_DND_ACTION_ASK:
+      fprintf(stderr, "[data_offer.action] ask\n");
+      break;
+    default:
+      fprintf(stderr, "[data_offer.action] unreachable\n");
+  }
 }
 
 struct wl_data_offer_listener data_offer_listener = {
@@ -355,12 +391,13 @@ struct wl_data_offer_listener data_offer_listener = {
 };
 
 void data_source_target(void *data, struct wl_data_source *dsrc, const char *mime_type) {
-
+  fprintf(stderr, "[data_source.target] MIME type: %s\n", mime_type);
+  // ignore types as we only use text/plain;charset=utf-8
 }
 
+// the procedure is common between dnds and selections
 void data_source_send(void *data, struct wl_data_source *dsrc, const char *mime_type, int32_t fd) {
-  fprintf(stderr, "[data_source.send] %s\n", mime_type);
-
+  fprintf(stderr, "[data_source.send] %s in %s\n", copy_text, mime_type);
   write(fd, copy_text, strlen(copy_text)); // ignore the tailing '\0'
   close(fd);
 }
@@ -375,11 +412,11 @@ void data_source_dnd_drop_performed(void *data, struct wl_data_source *dsrc) {
 }
 
 void data_source_dnd_finished(void *data, struct wl_data_source *dsrc) {
-  if (data_source) wl_data_source_destroy(data_source);
+  wl_data_source_destroy(dsrc);
 }
 
 void data_source_action(void *data, struct wl_data_source *dsrc, uint32_t dnd_action) {
-
+  // Since the data source (source client) and the data device (destination client) are same and we have already treated dnd_action in data_offer_action(), do nothing here.
 }
 
 struct wl_data_source_listener data_source_listener = {
@@ -391,26 +428,80 @@ struct wl_data_source_listener data_source_listener = {
   .action = data_source_action
 };
 
+uint32_t saved_actions;
+uint32_t dnd_action_at(wl_fixed_t x, wl_fixed_t y) {
+  int sx = x >> 8, sy = y >> 8;
+
+  // left top
+  if (sx < 200 && sy < 200) return WL_DATA_DEVICE_MANAGER_DND_ACTION_NONE;
+  
+  // left bottom
+  if (sx < 200 && sy >= 200) return WL_DATA_DEVICE_MANAGER_DND_ACTION_COPY;
+
+  // right top
+  if (sx >= 200 && sy < 200) return WL_DATA_DEVICE_MANAGER_DND_ACTION_MOVE;
+
+  // right bottom
+  if (sx >= 200 && sy >= 200) return WL_DATA_DEVICE_MANAGER_DND_ACTION_ASK;
+}
+
 void data_device_data_offer(void *data, struct wl_data_device *dev, struct wl_data_offer *id) {
   fprintf(stderr, "[data_device.data_offer] %p\n", id);
   // data_offer = id;
   wl_data_offer_add_listener(id, &data_offer_listener, NULL);
 }
 
-void data_device_enter(void *data, struct wl_data_device *dev, uint32_t serial, struct wl_surface *sfc, wl_fixed_t x, wl_fixed_t y, struct wl_data_offer *id) {
-  fprintf(stderr, "DnD pointer entered\n");
+void data_device_enter(void *data, struct wl_data_device *dev, uint32_t serial, struct wl_surface *sfc, wl_fixed_t x, wl_fixed_t y, struct wl_data_offer *offer) {
+  fprintf(stderr, "[data_device.enter]\n");
+
+  drag_offer = offer;
+  drag_enter_serial = serial;
+  saved_actions = dnd_action_at(x, y);
+  wl_data_offer_set_actions(offer, saved_actions, saved_actions);
+  wl_data_offer_accept(drag_offer, drag_enter_serial, "text/plain;charset=utf-8");
 }
 
 void data_device_leave(void *data, struct wl_data_device *dev) {
-  fprintf(stderr, "DnD pointer left\n");
+  fprintf(stderr, "[data_device.leave]\n");
+  if (drag_offer) wl_data_offer_destroy(drag_offer); 
 }
 
 void data_device_motion(void *data, struct wl_data_device *dev, uint32_t time, wl_fixed_t x, wl_fixed_t y) {
-  // do nothing
+  if (saved_actions != dnd_action_at(x, y)) {
+    saved_actions = dnd_action_at(x, y);
+    wl_data_offer_set_actions(drag_offer, saved_actions, saved_actions);
+    wl_data_offer_accept(drag_offer, drag_enter_serial, "text/plain;charset=utf-8");
+  }
 }
 
 void data_device_drop(void *data, struct wl_data_device *dev) {
-  // do nothing
+  // if the action is "ask", force the "copy" action ;)
+  if (drag_action == WL_DATA_DEVICE_MANAGER_DND_ACTION_ASK) {
+    wl_data_offer_set_actions(drag_offer, WL_DATA_DEVICE_MANAGER_DND_ACTION_COPY, WL_DATA_DEVICE_MANAGER_DND_ACTION_COPY);
+    wl_data_offer_accept(drag_offer, drag_enter_serial, "text/plain;charset=utf-8");
+    return; // shall we call wl_data_offer_finish() here even though we actually didn't complete a DND?
+  }
+
+  int fd[2], nfd;
+  struct epoll_event ev;
+  
+  if (!drag_offer) return;
+  if (pipe2(fd, __O_CLOEXEC) == -1) return;
+
+  ev.events = EPOLLIN;
+  ev.data.fd = drag_fd = fd[0];
+  if (epoll_ctl(epfd, EPOLL_CTL_ADD, fd[0], &ev) == -1) {
+    perror("Could not add fd[0]");
+    exit(1);
+  }
+
+  wl_data_offer_receive(drag_offer, "text/plain;charset=utf-8", fd[1]);
+  // wl_display_flush(display);
+  close(fd[1]);
+
+  fprintf(stderr, "[data_device.drop] wait for the source client to send the data...\n");
+
+  wl_data_offer_finish(drag_offer);
 }
 
 void data_device_selection(void *data, struct wl_data_device *dev, struct wl_data_offer *id) {
@@ -469,22 +560,9 @@ struct wl_registry_listener registry_listener = {
 
 // Shell surface listeners
 void handle_ping(void *data, struct wl_shell_surface *shell_surface, uint32_t serial) {
-  wl_shell_surface_pong(shell_surface, serial);
-  printf("Pong\n");
 }
 
 void handle_configure(void *data, struct wl_shell_surface *shell_surface, uint32_t edges, int32_t width, int32_t height) {
-  // resize
-  int32_t w = width, h = height;
-  if (w < MIN_WIN_WIDTH) w = MIN_WIN_WIDTH;
-  if (h < MIN_WIN_HEIGHT) h = MIN_WIN_HEIGHT;
-  fprintf(stderr, "hoge, w: %d, h: %d\n", w, h);
-
-  wl_buffer_destroy(buffer);
-
-  win_width = w;
-  win_height = h;
-  buffer = create_buffer();
 }
 
 void handle_popup_done(void *data, struct wl_shell_surface *shell_surface) {
@@ -496,6 +574,34 @@ struct wl_shell_surface_listener shell_surface_listener = {
   handle_configure,
   handle_popup_done
 };
+
+int epoll_read(int fd, char *buf, size_t *sz) {
+  int len = read(fd, buf + strlen(buf), 1024 - 1); // -1 is for '\0' we append later
+
+  if (len == 0) { // No more data to paste
+    close(fd);
+    // We don't have to delete clipboard_fd from epfd manually (see `man epoll`, Q6/A6)
+    // if (epoll_ctl(epfd, EPOLL_CTL_DEL, clipboard_fd, &ev) == -1) {
+    //   perror("could not delete fd[0]\n");
+    //   exit(1);
+    // }
+
+    fd = -1;
+    buf[strlen(buf)] = '\0'; // append '\0'
+    fprintf(stderr, "received: %s\n", buf);
+
+    // reset clipboard
+    strcpy(buf, "");
+    return 1;
+  }
+
+  if (strlen(buf) + 1024 > *sz) {
+    *sz += 1024;
+    buf = (char *)realloc(buf, *sz);
+  }
+
+  return 0;
+}
 
 int main(int argc, char **argv) {
   display = wl_display_connect(NULL);
@@ -556,6 +662,9 @@ int main(int argc, char **argv) {
   clipboard_size = 1024;
   clipboard = (char *)malloc(clipboard_size);
 
+  drag_content_size = 1024;
+  drag_content = (char *)malloc(drag_content_size);
+
   create_window();
   redraw(NULL, NULL, 0);
 
@@ -593,30 +702,13 @@ int main(int argc, char **argv) {
       }
 
       if (events[i].data.fd == clipboard_fd) {
-        fprintf(stderr, "transferring clipboard data...\n");
-        int len = read(clipboard_fd, clipboard + strlen(clipboard), 1024 - 1); // -1 is for '\0' we append later
+        fprintf(stderr, "[polling] transferring clipboard data...\n");
+        if (epoll_read(clipboard_fd, clipboard, &clipboard_size) == 1) break;
+      }
 
-        if (len == 0) { // No more data to paste
-          close(clipboard_fd);
-          // We don't have to delete clipboard_fd from epfd manually (see `man epoll`, Q6/A6)
-          // if (epoll_ctl(epfd, EPOLL_CTL_DEL, clipboard_fd, &ev) == -1) {
-          //   perror("could not delete fd[0]\n");
-          //   exit(1);
-          // }
-
-          clipboard_fd = -1;
-          clipboard[strlen(clipboard)] = '\0'; // append '\0'
-          fprintf(stderr, "clipboard: %s\n", clipboard);
-
-          // reset clipboard
-          strcpy(clipboard, "");
-          break;
-        }
-
-        if (strlen(clipboard) + 1024 > clipboard_size) {
-          clipboard_size += 1024;
-          clipboard = (char *)realloc(clipboard, clipboard_size);
-        }
+      if (events[i].data.fd == drag_fd) {
+        fprintf(stderr, "[polling] transferring dnd data...\n");
+        if (epoll_read(drag_fd, drag_content, &drag_content_size) == 1) break;
       }
     }
   }
@@ -627,6 +719,7 @@ int main(int argc, char **argv) {
   wl_data_device_destroy(data_device);
   wl_data_device_manager_destroy(data_device_man);
   free(clipboard);
+  free(drag_content);
 
   wl_display_disconnect(display);
   printf("disconnected from the display\n");
